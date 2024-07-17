@@ -154,20 +154,127 @@ def detect_arrow(image, text_target, debug=False):
         image_pyramid.append(cv2.pyrDown(image_pyramid[-1]))
 
     for roi in image_pyramid:
+        # blur
         roi = cv2.GaussianBlur(roi, (5, 5), 0)
-        edges = cv2.Canny(roi, 50, 150, apertureSize=3)
+        # OTSU 二值化
+        _, roi = cv2.threshold(roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        # 模板匹配
+        template = cv2.imread("./template/arrow_R.jpg", cv2.IMREAD_GRAYSCALE)
+        # 模板预处理，二值化并留下黑色部分
+        _, template = cv2.threshold(template, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        template = cv2.bitwise_not(template)
+        
         if debug:
-            cv2.imshow("Edges", edges)
+            cv2.imshow("Template", template)
             cv2.waitKey(0)
-        lines = cv2.HoughLines(edges, 1, np.pi / 180, 20)
+        w, h = template.shape[::-1]
+        res = cv2.matchTemplate(roi, template, cv2.TM_CCOEFF_NORMED)
+        threshold = 0.5
+        loc = np.where(res >= threshold)
+        if debug:
+            roiShow = cv2.cvtColor(roi, cv2.COLOR_GRAY2BGR)
+        for pt in zip(*loc[::-1]):
+            #gray to bgr
+            cv2.rectangle(roiShow, pt, (pt[0] + w, pt[1] + h), (0, 0, 255), 2)
+            print("Found arrow")
+            # return True
+        if debug:
+            cv2.imshow("Arrow", roiShow)
+            cv2.waitKey(0)
+
+        
+        # roi = cv2.GaussianBlur(roi, (5, 5), 0)
+        # edges = cv2.Canny(roi, 50, 150, apertureSize=3)
+        # if debug:
+        #     cv2.imshow("Edges", edges)
+        #     cv2.waitKey(0)
+        # lines = cv2.HoughLines(edges, 1, np.pi / 180, 20)
         # Add logic to process lines
 
     return False
 
 
+def match_template_multi_scale_angle(image, template, scales, angles, best_match, method=cv2.TM_CCOEFF_NORMED):
+    """
+    Matches a template in an image at multiple scales and angles.
+
+    Args:
+        image (numpy.ndarray): The input image in which to search for the template.
+        template (numpy.ndarray): The template image to search for.
+        scales (list of float): List of scales to resize the template.
+        angles (list of float): List of angles to rotate the template.
+        method (int): Matching method to use. Default is cv2.TM_CCOEFF_NORMED.
+
+    Returns:
+        dict: Dictionary containing the best match's location, scale, angle, and match value.
+    """
+
+    # template中的黑色部分不参与匹配
+    _, mask = cv2.threshold(template, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    # mask = cv2.bitwise_not(mask)
+    # if debug:
+        # cv2.imshow("Template", template)
+        # cv2.imshow("Image", image)
+        # cv2.imshow("Mask", mask)
+        # cv2.waitKey(0)
+
+    for scale in scales:
+        print("scale:", scale)
+        for angle in angles:
+            # Resize the template
+            scaled_template = cv2.resize(template, (0, 0), fx=scale, fy=scale)
+            scaled_mask = cv2.resize(mask, (0, 0), fx=scale, fy=scale)
+            # if template larger than image, skip
+            if scaled_template.shape[0] > image.shape[0] or scaled_template.shape[1] > image.shape[1]:
+                continue
+            h, w = scaled_template.shape[:2]
+            # Rotate the template
+            center = (w // 2, h // 2)
+            rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+            rotated_template = cv2.warpAffine(scaled_template, rotation_matrix, (w, h))
+            rotated_mask = cv2.warpAffine(scaled_mask, rotation_matrix, (w, h))
+            # if debug:
+                # cv2.imshow("Rotated Template", rotated_template)
+                # cv2.imshow("Rotated Mask", rotated_mask)
+                # cv2.waitKey(0)
+
+            # Match the template
+            # result = cv2.matchTemplate(image, rotated_template, method, mask=rotated_mask)
+            result = cv2.matchTemplate(image, rotated_template, method)
+
+            # result = cv2.matchTemplate(image, rotated_template, method)
+            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+            # check if max_val is inf
+            if np.isinf(max_val):
+                continue
+            if debug and True:
+                # concat image and template
+                h, w = rotated_template.shape[:2]
+                image_show = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+                image_show[0:h, 0:w] = cv2.cvtColor(rotated_template, cv2.COLOR_GRAY2BGR)
+                # draw rect and max_val
+                cv2.rectangle(image_show, max_loc, (max_loc[0] + w, max_loc[1] + h), (0, 0, 255), 2)
+                cv2.putText(image_show, f"{round(max_val,3)}", (max_loc[0], max_loc[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                cv2.imshow("Result ", image_show)
+                cv2.waitKey(0) 
+
+            # Check if this match is better than the best match so far
+            if max_val > best_match["max_val"]:
+                print("got better match")
+                best_match.update({
+                    "max_val": max_val,
+                    "max_loc": max_loc,
+                    "scale": scale,
+                    "angle": angle,
+                    "template": image_show,
+                })
+
+    return best_match
+
+
 if __name__ == '__main__':
     image_folder = './image'
-    destination_text = "药房"
+    destination_text = "儿科"
     debug = True
 
     ocr = PaddleOCR(use_angle_cls=True, lang="ch", show_log=False, use_gpu=True)
@@ -206,7 +313,76 @@ if __name__ == '__main__':
                     cv2.rectangle(image_show, text_target.coordinates.cv_top_left(), text_target.coordinates.cv_bottom_right(), (0, 255, 0), 2)
                     cv2.imshow("Result", image_show)
                     cv2.waitKey(0)
-                detect_arrow(mask_image, text_target, debug)
+                # detect_arrow(mask_image, text_target, debug)
+                # 模板匹配
+                template = cv2.imread("./template/image.png", cv2.IMREAD_GRAYSCALE)
+                # 缩小2x
+                template = cv2.resize(template, (0, 0), fx=0.5, fy=0.5)
+                # 模板预处理，二值化并留下黑色部分
+                _, template = cv2.threshold(template, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                # template = cv2.bitwise_not(template)
+                # template 逆时针旋转90度 构建新的模板
+                template_list = [template]
+                template = cv2.rotate(template, cv2.ROTATE_90_COUNTERCLOCKWISE)
+                template_list.append(template)
+                template = cv2.rotate(template, cv2.ROTATE_90_COUNTERCLOCKWISE)
+                template_list.append(template)
+
+
+
+                # scales = [0.5, 0.75, 1.0]
+                scales = [0.75, 1.0, 1.5]
+                angles = [-15, 0, 15]
+                top_left, bottom_right = text_target.coordinates.bounding_box()
+                extend_pixel = (bottom_right[0] - top_left[0]) * 2
+                top_left = (max(0, top_left[0] - extend_pixel), max(0, top_left[1] - extend_pixel))
+                bottom_right = (min(image.shape[1], bottom_right[0] + extend_pixel), min(image.shape[0], bottom_right[1] + extend_pixel))
+                roi = mask_image[top_left[1]:bottom_right[1], top_left[0]:bottom_right[0]]
+                # OTSU
+                # roi = cv2.GaussianBlur(roi, (5, 5), 0)
+                _, roi = cv2.threshold(roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                if debug:
+                    cv2.imshow("ROI", roi)
+                    cv2.waitKey(0)
+
+                best_match = {
+                    "max_val": 0.0,
+                    "max_loc": None,
+                    "scale": None,
+                    "angle": None,
+                    "template":None,
+                    }
+
+                for template in template_list:
+                    best_match = match_template_multi_scale_angle(roi, template, scales, angles, best_match)
+
+                if best_match["max_val"] < 0.4 :
+                    print("Cannot find the target image")
+                    continue
+                print(f"Best match at location {best_match['max_loc']} with scale {best_match['scale']} and angle {best_match['angle']}")
+                print(f"Match value: {best_match['max_val']}")
+
+                # if best_match['max_val'] > 0.3:
+                # show best_match['template']
+                cv2.imshow("Best Match", best_match['template'])
+                cv2.waitKey(0)
+                # Draw rectangle around the best match
+                h, w = best_match['template'].shape[:2]
+                best_scale = best_match["scale"]
+                best_angle = best_match["angle"]
+
+                # Resize and rotate template to best match scale and angle
+                scaled_template = cv2.resize(best_match['template'], (0, 0), fx=best_scale, fy=best_scale)
+                h_scaled, w_scaled = scaled_template.shape[:2]
+                # center = (w_scaled // 2, h_scaled // 2)
+                # rotation_matrix = cv2.getRotationMatrix2D(center, best_angle, 1.0)
+                # rotated_template = cv2.warpAffine(scaled_template, rotation_matrix, (w_scaled, h_scaled))
+
+                top_left = best_match["max_loc"]
+                bottom_right = (top_left[0] + w_scaled, top_left[1] + h_scaled)
+                cv2.waitKey(0)
+                cv2.destroyAllWindows()
+
             else:
                 print(f"Cannot find the target text '{destination_text}'")
 
