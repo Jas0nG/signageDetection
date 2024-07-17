@@ -190,6 +190,7 @@ if __name__ == '__main__':
                 coordinates, (text, confidence) = line
                 top_left, bottom_right = RectCoordinates(coordinates).bounding_box()
                 cv2.rectangle(mask_image, top_left, bottom_right, (255, 255, 255), -1)
+                # 通过 levenshtein 距离来进行模糊匹配，防止输入的目标文本有误差
                 similarity = compute_similarity(text, destination_text, debug)
                 if similarity > 0.0 and not found_destination_text:
                     found_destination_text = True
